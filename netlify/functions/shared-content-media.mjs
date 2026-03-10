@@ -10,6 +10,10 @@ import {
   unauthorizedResponse,
 } from "./_shared/portfolio-shared.mjs";
 
+const DEFAULT_NETLIFY_API_URL = "https://api.netlify.com";
+const SIGNED_URL_ACCEPT_HEADER = "application/json;type=signed-url";
+const MEDIA_STORE_NAME = "site:portfolio-shared-media";
+
 function getRequestKey(request) {
   return new URL(request.url).searchParams.get("key")?.trim() || "";
 }
@@ -18,12 +22,112 @@ function getChunkKey(uploadId, chunkIndex) {
   return `multipart/${uploadId}/${chunkIndex}`;
 }
 
+const MEDIA_STORE_RETRY_DELAYS = [250, 800, 1600];
+
+function wait(duration) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, duration);
+  });
+}
+
+function getBlobsEnvironmentContext() {
+  const encodedContext =
+    globalThis.netlifyBlobsContext || process.env.NETLIFY_BLOBS_CONTEXT;
+
+  if (typeof encodedContext !== "string" || !encodedContext.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(Buffer.from(encodedContext, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function getMediaSignedUrl(key) {
+  const context = getBlobsEnvironmentContext();
+  const apiUrl =
+    context?.apiURL ||
+    process.env.NETLIFY_BLOBS_API_URL ||
+    DEFAULT_NETLIFY_API_URL;
+  const siteId =
+    context?.siteID ||
+    process.env.SITE_ID ||
+    process.env.NETLIFY_SITE_ID ||
+    "";
+  const token = context?.token || process.env.NETLIFY_AUTH_TOKEN || "";
+
+  if (!siteId || !token) {
+    return null;
+  }
+
+  const signedUrlResponse = await fetch(
+    `${apiUrl}/api/v1/blobs/${encodeURIComponent(siteId)}/${MEDIA_STORE_NAME}/${key
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/")}`,
+    {
+      headers: {
+        Accept: SIGNED_URL_ACCEPT_HEADER,
+        Authorization: `Bearer ${token}`,
+      },
+      method: "GET",
+    },
+  );
+
+  if (!signedUrlResponse.ok) {
+    const errorText = await signedUrlResponse.text();
+    console.error(
+      `[shared-content-media] signed url request failed: key="${key}" status=${signedUrlResponse.status} body="${errorText}"`,
+    );
+    return null;
+  }
+
+  const payload = await signedUrlResponse.json();
+  if (!payload?.url || typeof payload.url !== "string") {
+    return null;
+  }
+
+  return payload.url;
+}
+
+async function setMediaStoreWithRetry(key, blob, options, label) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= MEDIA_STORE_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      await mediaStore.set(key, blob, options);
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(
+        `[shared-content-media] set failed: label="${label}" key="${key}" attempt=${attempt + 1}`,
+        error,
+      );
+    }
+
+    if (attempt < MEDIA_STORE_RETRY_DELAYS.length) {
+      await wait(MEDIA_STORE_RETRY_DELAYS[attempt]);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Unexpected media store write failure.");
+}
+
 export default async function handler(request) {
   try {
     if (request.method === "GET") {
       const key = getRequestKey(request);
       if (!key) {
         return badRequestResponse("Missing media key.");
+      }
+
+      const signedUrl = await getMediaSignedUrl(key);
+      if (signedUrl) {
+        return Response.redirect(signedUrl, 307);
       }
 
       const result = await mediaStore.getWithMetadata(key, {
@@ -105,7 +209,7 @@ export default async function handler(request) {
             `[shared-content-media] chunk upload: file="${fileName}" uploadId="${uploadId}" index=${chunkIndex + 1}/${totalChunks} size=${chunkBuffer.length}`,
           );
 
-          await mediaStore.set(
+          await setMediaStoreWithRetry(
             chunkKey,
             new Blob([chunkBuffer], {
               type: mimeType,
@@ -119,6 +223,7 @@ export default async function handler(request) {
                 uploadId,
               },
             },
+            `chunk:${fileName}:${chunkIndex + 1}/${totalChunks}`,
           );
 
           return jsonResponse({
@@ -172,7 +277,7 @@ export default async function handler(request) {
           }
 
           const key = createMediaKey(fileName);
-          await mediaStore.set(
+          await setMediaStoreWithRetry(
             key,
             new Blob(chunkBlobs, {
               type: mimeType,
@@ -183,9 +288,10 @@ export default async function handler(request) {
                 mimeType,
               },
             },
+            `complete:${fileName}`,
           );
 
-          await Promise.all(
+          await Promise.allSettled(
             Array.from({ length: totalChunks }, (_, chunkIndex) =>
               mediaStore.delete(getChunkKey(uploadId, chunkIndex)),
             ),
@@ -218,12 +324,12 @@ export default async function handler(request) {
         `[shared-content-media] single upload: file="${fileName}" size=${arrayBuffer.byteLength} type="${requestContentType}"`,
       );
 
-      await mediaStore.set(key, blob, {
+      await setMediaStoreWithRetry(key, blob, {
         metadata: {
           fileName,
           mimeType: requestContentType,
         },
-      });
+      }, `single:${fileName}`);
 
       return jsonResponse({
         key,

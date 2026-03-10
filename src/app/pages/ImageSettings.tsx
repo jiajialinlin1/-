@@ -80,10 +80,6 @@ import {
   createSharedContentTransferFile,
   importSharedContentTransferFile,
 } from "../config/sharedContentTransfer";
-import {
-  collectPrototypePackageHtmlPaths,
-  createPrototypePackageBundleFile,
-} from "../config/prototypePackageBundle";
 
 function hasProjectCoverCustomization(
   project: ProjectItem,
@@ -149,6 +145,8 @@ type PrototypePackageInputFile = File & {
   webkitRelativePath?: string;
 };
 
+const PROTOTYPE_UPLOAD_RETRY_DELAYS = [300, 900, 1800];
+
 function normalizePrototypePath(path: string) {
   return path
     .replace(/\\/g, "/")
@@ -163,6 +161,54 @@ function getPrototypePackageRelativePath(file: File) {
   const relativePath =
     (file as PrototypePackageInputFile).webkitRelativePath || file.name;
   return normalizePrototypePath(relativePath);
+}
+
+function wait(duration: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, duration);
+  });
+}
+
+async function storePrototypePackageFile(file: File) {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= PROTOTYPE_UPLOAD_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      return await storeMediaFile(file);
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < PROTOTYPE_UPLOAD_RETRY_DELAYS.length) {
+      await wait(PROTOTYPE_UPLOAD_RETRY_DELAYS[attempt]);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("PROTOTYPE_MEDIA_UPLOAD_FAILED");
+}
+
+async function uploadPrototypePackageFiles(
+  files: Array<{ file: File; path: string }>,
+) {
+  const uploadedFiles: Array<{
+    mimeType?: string;
+    path: string;
+    src: string;
+  }> = [];
+
+  for (const [index, { file, path }] of files.entries()) {
+    uploadedFiles.push({
+      path,
+      src: await storePrototypePackageFile(file),
+      mimeType: file.type || undefined,
+    });
+
+    if (index < files.length - 1) {
+      await wait(80);
+    }
+  }
+
+  return uploadedFiles;
 }
 
 function stripPrototypePackageRoot(
@@ -781,26 +827,18 @@ export function ImageSettings() {
         currentProject?.prototypeHtml,
         ...(currentProject?.prototypeFiles?.map((prototypeFile) => prototypeFile.src) ?? []),
       ];
-      const prototypeBundleFile = await createPrototypePackageBundleFile({
-        entryPath,
-        files: normalizedPackageFiles.files,
-        packageName: normalizedPackageFiles.packageName,
-      });
-      const prototypeBundle = await storeMediaFile(
-        prototypeBundleFile,
-      );
-      const prototypeHtmlPaths = collectPrototypePackageHtmlPaths(
-        normalizedPackageFiles.files.map(({ path }) => path),
+      const prototypeFiles = await uploadPrototypePackageFiles(
+        normalizedPackageFiles.files,
       );
       const nextProjects = projects.map((project) =>
         project.id === projectId
           ? {
               ...project,
-              prototypeBundle,
+              prototypeBundle: undefined,
               prototypeHtml: undefined,
-              prototypeHtmlPaths,
+              prototypeHtmlPaths: undefined,
               prototypeEntryPath: entryPath,
-              prototypeFiles: undefined,
+              prototypeFiles,
               prototypeName: normalizedPackageFiles.packageName,
             }
           : project,
@@ -808,7 +846,9 @@ export function ImageSettings() {
       const saved = persistProjects(nextProjects);
 
       if (!saved) {
-        await deleteStoredMedia(prototypeBundle);
+        await deleteStoredMediaBatch(
+          prototypeFiles.map((prototypeFile) => prototypeFile.src),
+        );
         return;
       }
 
