@@ -161,6 +161,26 @@ function getPrototypePackageRelativePath(file: File) {
   return normalizePrototypePath(relativePath);
 }
 
+async function uploadPrototypePackageFiles(
+  files: Array<{ file: File; path: string }>,
+) {
+  const uploadedFiles: Array<{
+    mimeType?: string;
+    path: string;
+    src: string;
+  }> = [];
+
+  for (const { file, path } of files) {
+    uploadedFiles.push({
+      path,
+      src: await storeMediaFile(file),
+      mimeType: file.type || undefined,
+    });
+  }
+
+  return uploadedFiles;
+}
+
 function stripPrototypePackageRoot(
   files: Array<{ file: File; path: string }>,
 ) {
@@ -757,12 +777,8 @@ export function ImageSettings() {
         currentProject?.prototypeHtml,
         ...(currentProject?.prototypeFiles?.map((prototypeFile) => prototypeFile.src) ?? []),
       ];
-      const prototypeFiles = await Promise.all(
-        normalizedPackageFiles.files.map(async ({ file, path }) => ({
-          path,
-          src: await storeMediaFile(file),
-          mimeType: file.type || undefined,
-        })),
+      const prototypeFiles = await uploadPrototypePackageFiles(
+        normalizedPackageFiles.files,
       );
       const nextProjects = projects.map((project) =>
         project.id === projectId
@@ -787,7 +803,7 @@ export function ImageSettings() {
         await deleteStoredMediaBatch(previousPrototypeSources);
       }
     } catch {
-      setError("导出包保存失败，请重试。");
+      setError("导出包保存失败，请重试；如果导出包资源较多，请等待当前上传结束后再次尝试。");
     } finally {
       setActiveTarget(null);
       event.target.value = "";
