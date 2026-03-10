@@ -12,6 +12,7 @@ import {
 const DB_NAME = "portfolio_media_v1";
 const STORE_NAME = "media_assets";
 const MEDIA_REF_PREFIX = "idb:";
+const REMOTE_MEDIA_CHUNK_SIZE = 3 * 1024 * 1024;
 
 interface MediaRecord {
   id: string;
@@ -133,6 +134,19 @@ async function getStoredMediaRecord(src: string | null | undefined) {
 async function dataUrlToBlob(dataUrl: string) {
   const response = await fetch(dataUrl);
   return response.blob();
+}
+
+function blobToBase64(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const [, base64 = ""] = result.split(",", 2);
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
 }
 
 export function isStoredMediaReference(src: string | null | undefined): src is string {
@@ -258,7 +272,105 @@ async function uploadRemoteMediaFile(file: File) {
   return createRemoteMediaReference(payload.key, payload.mimeType || file.type);
 }
 
+async function uploadRemoteMediaFileInChunks(file: File) {
+  const password = getImageSettingsAccessPassword();
+  if (!password) {
+    return null;
+  }
+
+  const uploadId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const mimeType = file.type || "application/octet-stream";
+  const totalChunks = Math.ceil(file.size / REMOTE_MEDIA_CHUNK_SIZE);
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkBlob = file.slice(
+      chunkIndex * REMOTE_MEDIA_CHUNK_SIZE,
+      (chunkIndex + 1) * REMOTE_MEDIA_CHUNK_SIZE,
+      mimeType,
+    );
+    const chunkBase64 = await blobToBase64(chunkBlob);
+    const response = await fetch(SHARED_CONTENT_MEDIA_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...createSharedContentAuthHeaders(password),
+      },
+      body: JSON.stringify({
+        chunkBase64,
+        fileName: file.name,
+        index: chunkIndex,
+        mimeType,
+        mode: "chunk",
+        totalChunks,
+        uploadId,
+      }),
+    });
+
+    const hasServiceHeader = hasSharedContentServiceHeader(response.headers);
+    if (!hasServiceHeader) {
+      return null;
+    }
+
+    if (response.status === 401) {
+      throw new Error("REMOTE_MEDIA_UNAUTHORIZED");
+    }
+
+    if (!response.ok) {
+      throw new Error("REMOTE_MEDIA_CHUNK_UPLOAD_FAILED");
+    }
+  }
+
+  const completeResponse = await fetch(SHARED_CONTENT_MEDIA_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...createSharedContentAuthHeaders(password),
+    },
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType,
+      mode: "complete",
+      totalChunks,
+      uploadId,
+    }),
+  });
+
+  const hasServiceHeader = hasSharedContentServiceHeader(completeResponse.headers);
+  if (!hasServiceHeader) {
+    return null;
+  }
+
+  if (completeResponse.status === 401) {
+    throw new Error("REMOTE_MEDIA_UNAUTHORIZED");
+  }
+
+  if (!completeResponse.ok) {
+    throw new Error("REMOTE_MEDIA_COMPLETE_FAILED");
+  }
+
+  const payload = (await completeResponse.json()) as {
+    key?: string;
+    mimeType?: string;
+  };
+
+  if (!payload.key) {
+    throw new Error("REMOTE_MEDIA_MALFORMED_RESPONSE");
+  }
+
+  return createRemoteMediaReference(payload.key, payload.mimeType || mimeType);
+}
+
 export async function storeMediaFile(file: File) {
+  if (file.size > REMOTE_MEDIA_CHUNK_SIZE) {
+    const remoteChunkedReference = await uploadRemoteMediaFileInChunks(file);
+    if (remoteChunkedReference) {
+      return remoteChunkedReference;
+    }
+  }
+
   const remoteReference = await uploadRemoteMediaFile(file);
   if (remoteReference) {
     return remoteReference;

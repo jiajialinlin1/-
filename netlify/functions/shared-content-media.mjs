@@ -14,6 +14,10 @@ function getRequestKey(request) {
   return new URL(request.url).searchParams.get("key")?.trim() || "";
 }
 
+function getChunkKey(uploadId, chunkIndex) {
+  return `multipart/${uploadId}/${chunkIndex}`;
+}
+
 export default async function handler(request) {
   if (request.method === "GET") {
     const key = getRequestKey(request);
@@ -57,28 +61,154 @@ export default async function handler(request) {
       return unauthorizedResponse();
     }
 
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.startsWith("application/json")) {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return badRequestResponse("Invalid JSON payload.");
+      }
+
+      if (body?.mode === "chunk") {
+        const uploadId =
+          typeof body.uploadId === "string" ? body.uploadId.trim() : "";
+        const totalChunks = Number(body.totalChunks);
+        const chunkIndex = Number(body.index);
+        const mimeType =
+          typeof body.mimeType === "string" && body.mimeType.trim()
+            ? body.mimeType.trim()
+            : "application/octet-stream";
+        const fileName =
+          typeof body.fileName === "string" && body.fileName.trim()
+            ? body.fileName.trim()
+            : "upload.bin";
+        const chunkBase64 =
+          typeof body.chunkBase64 === "string" ? body.chunkBase64 : "";
+
+        if (
+          !uploadId ||
+          !chunkBase64 ||
+          !Number.isInteger(totalChunks) ||
+          !Number.isInteger(chunkIndex) ||
+          totalChunks <= 0 ||
+          chunkIndex < 0 ||
+          chunkIndex >= totalChunks
+        ) {
+          return badRequestResponse("Invalid upload chunk payload.");
+        }
+
+        const chunkKey = getChunkKey(uploadId, chunkIndex);
+        const chunkBuffer = Buffer.from(chunkBase64, "base64");
+
+        await mediaStore.set(
+          chunkKey,
+          new Blob([chunkBuffer], {
+            type: mimeType,
+          }),
+          {
+            metadata: {
+              fileName,
+              kind: "multipart-chunk",
+              mimeType,
+              totalChunks,
+              uploadId,
+            },
+          },
+        );
+
+        return jsonResponse({
+          chunkIndex,
+          ok: true,
+        });
+      }
+
+      if (body?.mode === "complete") {
+        const uploadId =
+          typeof body.uploadId === "string" ? body.uploadId.trim() : "";
+        const totalChunks = Number(body.totalChunks);
+        const mimeType =
+          typeof body.mimeType === "string" && body.mimeType.trim()
+            ? body.mimeType.trim()
+            : "application/octet-stream";
+        const fileName =
+          typeof body.fileName === "string" && body.fileName.trim()
+            ? body.fileName.trim()
+            : "upload.bin";
+
+        if (
+          !uploadId ||
+          !Number.isInteger(totalChunks) ||
+          totalChunks <= 0
+        ) {
+          return badRequestResponse("Invalid upload completion payload.");
+        }
+
+        const chunkBlobs = [];
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+          const chunkBlob = await mediaStore.get(
+            getChunkKey(uploadId, chunkIndex),
+            {
+              type: "blob",
+            },
+          );
+
+          if (!chunkBlob) {
+            return badRequestResponse(`Missing upload chunk ${chunkIndex}.`);
+          }
+
+          chunkBlobs.push(chunkBlob);
+        }
+
+        const key = createMediaKey(fileName);
+        await mediaStore.set(
+          key,
+          new Blob(chunkBlobs, {
+            type: mimeType,
+          }),
+          {
+            metadata: {
+              fileName,
+              mimeType,
+            },
+          },
+        );
+
+        await Promise.all(
+          Array.from({ length: totalChunks }, (_, chunkIndex) =>
+            mediaStore.delete(getChunkKey(uploadId, chunkIndex)),
+          ),
+        );
+
+        return jsonResponse({
+          key,
+          mimeType,
+        });
+      }
+    }
+
     const fileNameHeader = request.headers.get("x-file-name");
     const fileName = fileNameHeader
       ? decodeURIComponent(fileNameHeader)
       : "upload.bin";
-    const contentType =
+    const requestContentType =
       request.headers.get("content-type") || "application/octet-stream";
     const arrayBuffer = await request.arrayBuffer();
     const blob = new Blob([arrayBuffer], {
-      type: contentType,
+      type: requestContentType,
     });
     const key = createMediaKey(fileName);
 
     await mediaStore.set(key, blob, {
       metadata: {
         fileName,
-        mimeType: contentType,
+        mimeType: requestContentType,
       },
     });
 
     return jsonResponse({
       key,
-      mimeType: contentType,
+      mimeType: requestContentType,
     });
   }
 
