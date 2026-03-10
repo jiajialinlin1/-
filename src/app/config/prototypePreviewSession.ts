@@ -1,12 +1,15 @@
-import type { PrototypePackageFile } from "./projectsSettings";
-
 export const PROTOTYPE_PREVIEW_SCOPE_PREFIX = "/prototype-preview/";
 export const PROTOTYPE_PREVIEW_DB_NAME = "portfolio_prototype_preview_v1";
 export const PROTOTYPE_PREVIEW_STORE_NAME = "preview_sessions";
 const PROTOTYPE_PREVIEW_DB_VERSION = 1;
 const PREVIEW_SESSION_TTL = 1000 * 60 * 60 * 6;
 
-export interface PrototypePreviewSessionFile extends PrototypePackageFile {}
+export interface PrototypePreviewSessionFile {
+  blobData?: Blob;
+  mimeType?: string;
+  path: string;
+  src?: string;
+}
 
 export interface PrototypePreviewSession {
   id: string;
@@ -123,6 +126,7 @@ export async function savePrototypePreviewSession(
     files: session.files.map((file) => ({
       ...file,
       path: normalizePrototypePreviewPath(file.path),
+      src: typeof file.src === "string" ? file.src : undefined,
     })),
   } satisfies PrototypePreviewSession);
 

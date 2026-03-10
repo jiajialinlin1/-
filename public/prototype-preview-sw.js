@@ -238,7 +238,9 @@ async function resolveMediaBlob(src) {
 }
 
 async function createFileResponse(file, resolvedPath) {
-  const blob = await resolveMediaBlob(file.src);
+  const blob = file.blobData instanceof Blob
+    ? file.blobData
+    : await resolveMediaBlob(file.src);
   if (!blob) return null;
 
   const headers = new Headers({

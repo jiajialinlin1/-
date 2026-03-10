@@ -4,6 +4,7 @@ import {
   deletePrototypePreviewSession,
   savePrototypePreviewSession,
   cleanupExpiredPrototypePreviewSessions,
+  type PrototypePreviewSessionFile,
 } from "./prototypePreviewSession";
 import { ensurePrototypePreviewServiceWorker } from "./prototypePreviewServiceWorker";
 import {
@@ -65,10 +66,11 @@ async function createPreviewSessionFiles(project: ProjectItem) {
 
   return [
     {
+      blobData: undefined,
       path: getProjectPrototypeEntryPath(project) || "index.html",
       src: project.prototypeHtml,
       mimeType: "text/html",
-    },
+    } satisfies PrototypePreviewSessionFile,
   ];
 }
 
