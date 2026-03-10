@@ -13,6 +13,7 @@ import {
   hasProjectPrototypePackage,
   type ProjectItem,
 } from "./projectsSettings";
+import { loadPrototypePackageBundleFiles } from "./prototypePackageBundle";
 
 export type OpenProjectPrototypeResult =
   | "opened"
@@ -43,7 +44,17 @@ function renderPreviewWindowState(
   `;
 }
 
-function createPreviewSessionFiles(project: ProjectItem) {
+async function createPreviewSessionFiles(project: ProjectItem) {
+  if (project.prototypeBundle) {
+    const bundledFiles = await loadPrototypePackageBundleFiles(
+      project.prototypeBundle,
+    );
+
+    if (bundledFiles.length > 0) {
+      return bundledFiles;
+    }
+  }
+
   if (hasProjectPrototypePackage(project)) {
     return getProjectPrototypePackageFiles(project);
   }
@@ -109,7 +120,7 @@ export async function openProjectPrototypeWindow(
     await cleanupExpiredPrototypePreviewSessions();
 
     const entryPath = getProjectPrototypeEntryPath(project);
-    const files = createPreviewSessionFiles(project);
+    const files = await createPreviewSessionFiles(project);
 
     if (!entryPath || files.length === 0) {
       renderPreviewWindowState(

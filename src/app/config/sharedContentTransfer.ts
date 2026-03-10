@@ -244,6 +244,11 @@ export async function importSharedContentTransferFile(file: File) {
         designImages: (project.designImages ?? []).map((src) =>
           isStoredMediaReference(src) ? refMap.get(src) || src : src,
         ),
+        prototypeBundle:
+          typeof project.prototypeBundle === "string" &&
+          isStoredMediaReference(project.prototypeBundle)
+            ? refMap.get(project.prototypeBundle) || project.prototypeBundle
+            : project.prototypeBundle,
         prototypeHtml:
           typeof project.prototypeHtml === "string" &&
           isStoredMediaReference(project.prototypeHtml)

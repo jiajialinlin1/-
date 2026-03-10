@@ -46,7 +46,9 @@ export interface ProjectItem {
   imageSlot?: ImageSlotId;
   image?: string;
   imageDisplayMode?: ProjectMediaDisplayMode;
+  prototypeBundle?: string;
   prototypeHtml?: string;
+  prototypeHtmlPaths?: string[];
   prototypeName?: string;
   prototypeEntryPath?: string;
   prototypeFiles?: PrototypePackageFile[];
@@ -204,6 +206,13 @@ function sanitizeProject(input: unknown): ProjectItem | null {
     normalized.prototypeHtml = candidate.prototypeHtml.trim();
   }
 
+  if (
+    typeof candidate.prototypeBundle === "string" &&
+    candidate.prototypeBundle.trim()
+  ) {
+    normalized.prototypeBundle = candidate.prototypeBundle.trim();
+  }
+
   if (typeof candidate.prototypeName === "string" && candidate.prototypeName.trim()) {
     normalized.prototypeName = candidate.prototypeName.trim();
   }
@@ -213,6 +222,22 @@ function sanitizeProject(input: unknown): ProjectItem | null {
     candidate.prototypeEntryPath.trim()
   ) {
     normalized.prototypeEntryPath = candidate.prototypeEntryPath.trim();
+  }
+
+  if (Array.isArray(candidate.prototypeHtmlPaths)) {
+    normalized.prototypeHtmlPaths = Array.from(
+      new Set(
+        candidate.prototypeHtmlPaths
+          .filter(
+            (path): path is string =>
+              typeof path === "string" && /\.html?$/i.test(path.trim()),
+          )
+          .map((path) => path.trim())
+          .filter(Boolean),
+      ),
+    ).sort((leftPath, rightPath) =>
+      leftPath.localeCompare(rightPath, "zh-Hans-CN"),
+    );
   }
 
   if (Array.isArray(candidate.prototypeFiles)) {
@@ -374,8 +399,8 @@ export function isProjectBackgroundAttachmentPreviewable(
 export function hasProjectPrototype(project: ProjectItem) {
   return Boolean(
     (project.prototypeEntryPath &&
-      project.prototypeFiles &&
-      project.prototypeFiles.length > 0) ||
+      ((project.prototypeBundle && project.prototypeBundle.trim()) ||
+        (project.prototypeFiles && project.prototypeFiles.length > 0))) ||
       (project.prototypeHtml && project.prototypeHtml.trim()),
   );
 }
@@ -388,8 +413,8 @@ export function getProjectPrototypeSrc(project: ProjectItem) {
 export function hasProjectPrototypePackage(project: ProjectItem) {
   return Boolean(
     project.prototypeEntryPath &&
-      project.prototypeFiles &&
-      project.prototypeFiles.length > 0,
+      ((project.prototypeBundle && project.prototypeBundle.trim()) ||
+        (project.prototypeFiles && project.prototypeFiles.length > 0)),
   );
 }
 
@@ -411,6 +436,14 @@ export function getProjectPrototypeEntryPath(project: ProjectItem) {
 
 export function getProjectPrototypeEntryCandidates(project: ProjectItem) {
   if (hasProjectPrototypePackage(project)) {
+    if (project.prototypeBundle) {
+      return (project.prototypeHtmlPaths ?? []).length > 0
+        ? [...(project.prototypeHtmlPaths ?? [])]
+        : project.prototypeEntryPath
+          ? [project.prototypeEntryPath]
+          : [];
+    }
+
     return (project.prototypeFiles ?? [])
       .map((file) => file.path)
       .filter((path) => /\.html?$/i.test(path))
@@ -428,6 +461,7 @@ export function collectProjectMediaRefs() {
   return getProjects().flatMap((project) =>
     [
       project.image,
+      project.prototypeBundle,
       project.prototypeHtml,
       ...(project.backgroundAttachments?.map((attachment) => attachment.src) ?? []),
       ...project.designImages,
@@ -448,6 +482,7 @@ export async function migrateProjectsMediaToIndexedDb() {
       let nextImage = project.image;
       let nextBackgroundAttachments = project.backgroundAttachments;
       let nextDesignImages = project.designImages;
+      let nextPrototypeBundle = project.prototypeBundle;
       let nextPrototypeHtml = project.prototypeHtml;
       let nextPrototypeFiles = project.prototypeFiles;
 
@@ -503,6 +538,15 @@ export async function migrateProjectsMediaToIndexedDb() {
       }
 
       if (
+        nextPrototypeBundle &&
+        !isStoredMediaReference(nextPrototypeBundle) &&
+        nextPrototypeBundle.startsWith("data:")
+      ) {
+        nextPrototypeBundle = await migrateDataUrlToStoredMedia(nextPrototypeBundle);
+        changed = true;
+      }
+
+      if (
         nextPrototypeHtml &&
         !isStoredMediaReference(nextPrototypeHtml) &&
         nextPrototypeHtml.startsWith("data:")
@@ -540,6 +584,7 @@ export async function migrateProjectsMediaToIndexedDb() {
         image: nextImage,
         backgroundAttachments: nextBackgroundAttachments,
         designImages: nextDesignImages,
+        prototypeBundle: nextPrototypeBundle,
         prototypeHtml: nextPrototypeHtml,
         prototypeFiles: nextPrototypeFiles,
       };

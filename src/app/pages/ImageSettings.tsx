@@ -80,6 +80,10 @@ import {
   createSharedContentTransferFile,
   importSharedContentTransferFile,
 } from "../config/sharedContentTransfer";
+import {
+  collectPrototypePackageHtmlPaths,
+  createPrototypePackageBundleFile,
+} from "../config/prototypePackageBundle";
 
 function hasProjectCoverCustomization(
   project: ProjectItem,
@@ -159,26 +163,6 @@ function getPrototypePackageRelativePath(file: File) {
   const relativePath =
     (file as PrototypePackageInputFile).webkitRelativePath || file.name;
   return normalizePrototypePath(relativePath);
-}
-
-async function uploadPrototypePackageFiles(
-  files: Array<{ file: File; path: string }>,
-) {
-  const uploadedFiles: Array<{
-    mimeType?: string;
-    path: string;
-    src: string;
-  }> = [];
-
-  for (const { file, path } of files) {
-    uploadedFiles.push({
-      path,
-      src: await storeMediaFile(file),
-      mimeType: file.type || undefined,
-    });
-  }
-
-  return uploadedFiles;
 }
 
 function stripPrototypePackageRoot(
@@ -793,19 +777,30 @@ export function ImageSettings() {
     try {
       const currentProject = projects.find((project) => project.id === projectId);
       const previousPrototypeSources = [
+        currentProject?.prototypeBundle,
         currentProject?.prototypeHtml,
         ...(currentProject?.prototypeFiles?.map((prototypeFile) => prototypeFile.src) ?? []),
       ];
-      const prototypeFiles = await uploadPrototypePackageFiles(
-        normalizedPackageFiles.files,
+      const prototypeBundleFile = await createPrototypePackageBundleFile({
+        entryPath,
+        files: normalizedPackageFiles.files,
+        packageName: normalizedPackageFiles.packageName,
+      });
+      const prototypeBundle = await storeMediaFile(
+        prototypeBundleFile,
+      );
+      const prototypeHtmlPaths = collectPrototypePackageHtmlPaths(
+        normalizedPackageFiles.files.map(({ path }) => path),
       );
       const nextProjects = projects.map((project) =>
         project.id === projectId
           ? {
               ...project,
+              prototypeBundle,
               prototypeHtml: undefined,
+              prototypeHtmlPaths,
               prototypeEntryPath: entryPath,
-              prototypeFiles,
+              prototypeFiles: undefined,
               prototypeName: normalizedPackageFiles.packageName,
             }
           : project,
@@ -813,7 +808,7 @@ export function ImageSettings() {
       const saved = persistProjects(nextProjects);
 
       if (!saved) {
-        await deleteStoredMediaBatch(prototypeFiles.map((prototypeFile) => prototypeFile.src));
+        await deleteStoredMedia(prototypeBundle);
         return;
       }
 
@@ -839,12 +834,15 @@ export function ImageSettings() {
     if (!project || !hasProjectPrototype(project)) return;
 
     const previousPrototypeSources = [
+      project.prototypeBundle,
       project.prototypeHtml,
       ...(project.prototypeFiles?.map((prototypeFile) => prototypeFile.src) ?? []),
     ];
     const saved = updateProject(projectId, (project) => ({
       ...project,
+      prototypeBundle: undefined,
       prototypeHtml: undefined,
+      prototypeHtmlPaths: undefined,
       prototypeName: undefined,
       prototypeEntryPath: undefined,
       prototypeFiles: undefined,
@@ -997,6 +995,7 @@ export function ImageSettings() {
     if (syncResult.status === "synced" || syncResult.status === "local-only") {
       await deleteStoredMediaBatch([
         project.image,
+        project.prototypeBundle,
         project.prototypeHtml,
         ...getProjectBackgroundAttachments(project).map((attachment) => attachment.src),
         ...(project.prototypeFiles?.map((prototypeFile) => prototypeFile.src) ?? []),
