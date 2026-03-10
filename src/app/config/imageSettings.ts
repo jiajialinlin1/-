@@ -132,6 +132,10 @@ export function getImageOverride(slotId: ImageSlotId) {
   return getImageOverrides()[slotId];
 }
 
+export function replaceImageOverrides(overrides: ImageOverrides) {
+  saveImageOverrides(sanitizeOverrides(overrides));
+}
+
 export function getImageSrc(slotId: ImageSlotId): string | null {
   const overrideSrc = getImageOverride(slotId);
   if (!overrideSrc) return DEFAULT_IMAGES[slotId];

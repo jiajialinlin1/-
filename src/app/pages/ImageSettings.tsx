@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Smartphone,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { ProjectMediaFrame } from "../components/ProjectMediaFrame";
 import {
@@ -75,6 +76,10 @@ import {
   syncSharedContentDocument,
   type SharedContentSyncResult,
 } from "../config/sharedContentApi";
+import {
+  createSharedContentTransferFile,
+  importSharedContentTransferFile,
+} from "../config/sharedContentTransfer";
 
 function hasProjectCoverCustomization(
   project: ProjectItem,
@@ -277,6 +282,7 @@ export function ImageSettings() {
       : "当前为浏览器本地模式。部署到 Netlify 后会自动切换为共享模式。",
   );
   const deferredSyncTimerRef = useRef<number | null>(null);
+  const importTransferInputRef = useRef<HTMLInputElement | null>(null);
   const heroImageSrc = getImageSrc("heroPortrait");
 
   const configuredProjectsCount = useMemo(
@@ -1007,6 +1013,59 @@ export function ImageSettings() {
     }
   };
 
+  const handleExportTransferPackage = async () => {
+    setError(null);
+    setActiveTarget("transfer-export");
+
+    try {
+      const transferFile = await createSharedContentTransferFile();
+      const downloadUrl = URL.createObjectURL(transferFile);
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = transferFile.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(downloadUrl);
+    } catch {
+      setError("内容包导出失败，请重试。");
+    } finally {
+      setActiveTarget(null);
+    }
+  };
+
+  const handleImportTransferPackage = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const confirmed = window.confirm(
+      "导入内容包会用文件中的内容覆盖当前站点设置，是否继续？",
+    );
+    if (!confirmed) {
+      event.target.value = "";
+      return;
+    }
+
+    setError(null);
+    setActiveTarget("transfer-import");
+
+    try {
+      const importedContent = await importSharedContentTransferFile(file);
+      setProjects(importedContent.projects);
+      setExperiences(importedContent.experiences);
+      setPersonalInfoSettings(importedContent.personalInfo);
+      setOverrides(importedContent.imageOverrides);
+      await syncSharedContentNow();
+    } catch {
+      setError("内容包导入失败，请检查文件后重试。");
+    } finally {
+      setActiveTarget(null);
+      event.target.value = "";
+    }
+  };
+
   return (
     <div className="min-h-screen bg-white text-[#1d1d1f] pt-32 pb-24">
       <div className="max-w-7xl mx-auto px-8 md:px-16">
@@ -1069,8 +1128,37 @@ export function ImageSettings() {
                 {isSyncing ? "正在同步..." : syncNotice}
               </span>
             </div>
+            <p className="mt-2 text-xs text-[#a0a0a5]">
+              迁移到线上时，可先在本地导出内容包，再到 Netlify 站点导入。
+            </p>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => void handleExportTransferPackage()}
+              disabled={activeTarget === "transfer-export"}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#d2d2d7] text-[#1d1d1f] hover:bg-[#f5f5f7] transition-colors disabled:opacity-50"
+            >
+              <Download size={16} />
+              {activeTarget === "transfer-export" ? "导出中..." : "导出内容包"}
+            </button>
+            <div>
+              <input
+                ref={importTransferInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => void handleImportTransferPackage(event)}
+              />
+              <button
+                type="button"
+                onClick={() => importTransferInputRef.current?.click()}
+                disabled={activeTarget === "transfer-import"}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#d2d2d7] text-[#1d1d1f] hover:bg-[#f5f5f7] transition-colors disabled:opacity-50"
+              >
+                <Upload size={16} />
+                {activeTarget === "transfer-import" ? "导入中..." : "导入内容包"}
+              </button>
+            </div>
             <button
               onClick={handleAddExperience}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#d2d2d7] text-[#1d1d1f] hover:bg-[#f5f5f7] transition-colors"
