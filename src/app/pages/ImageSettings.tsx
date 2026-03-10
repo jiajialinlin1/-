@@ -285,6 +285,25 @@ function shouldDeleteMediaAfterSync(
   return syncResult.status !== "failed" && syncResult.status !== "unauthorized";
 }
 
+function getMediaUploadErrorMessage(error: unknown, fallbackMessage: string) {
+  const errorMessage = error instanceof Error ? error.message : "";
+
+  if (errorMessage.includes("REMOTE_MEDIA_UNAUTHORIZED")) {
+    return "线上媒体上传鉴权失败，请重新进入内容设置后重试。";
+  }
+
+  if (
+    errorMessage.includes("REMOTE_MEDIA_UPLOAD_FAILED") ||
+    errorMessage.includes("REMOTE_MEDIA_CHUNK_UPLOAD_FAILED") ||
+    errorMessage.includes("REMOTE_MEDIA_COMPLETE_FAILED") ||
+    errorMessage.includes("REMOTE_MEDIA_HTTP_")
+  ) {
+    return "线上媒体上传失败，请稍后重试；如果仍失败，请查看 Netlify 的 shared-content-media 函数日志。";
+  }
+
+  return fallbackMessage;
+}
+
 export function ImageSettings() {
   const [overrides, setOverrides] = useState(() => getImageOverrides());
   const [personalInfoSettings, setPersonalInfoSettings] = useState<PersonalInfoSettings>(() =>
@@ -802,8 +821,13 @@ export function ImageSettings() {
       if (syncResult.status === "synced") {
         await deleteStoredMediaBatch(previousPrototypeSources);
       }
-    } catch {
-      setError("导出包保存失败，请重试；如果导出包资源较多，请等待当前上传结束后再次尝试。");
+    } catch (error) {
+      setError(
+        getMediaUploadErrorMessage(
+          error,
+          "导出包保存失败，请重试；如果导出包资源较多，请等待当前上传结束后再次尝试。",
+        ),
+      );
     } finally {
       setActiveTarget(null);
       event.target.value = "";

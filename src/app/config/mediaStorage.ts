@@ -13,6 +13,7 @@ const DB_NAME = "portfolio_media_v1";
 const STORE_NAME = "media_assets";
 const MEDIA_REF_PREFIX = "idb:";
 const REMOTE_MEDIA_CHUNK_SIZE = 3 * 1024 * 1024;
+const REMOTE_MEDIA_RETRY_DELAYS = [250, 800, 1600];
 
 interface MediaRecord {
   id: string;
@@ -149,6 +150,49 @@ function blobToBase64(blob: Blob) {
   });
 }
 
+function wait(duration: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, duration);
+  });
+}
+
+async function readErrorResponse(response: Response) {
+  try {
+    return await response.text();
+  } catch {
+    return "";
+  }
+}
+
+async function fetchRemoteMediaWithRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+) {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= REMOTE_MEDIA_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (response.ok || response.status === 401 || response.status < 500) {
+        return response;
+      }
+
+      const errorText = await readErrorResponse(response);
+      lastError = new Error(
+        `REMOTE_MEDIA_HTTP_${response.status}${errorText ? `:${errorText}` : ""}`,
+      );
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("REMOTE_MEDIA_FETCH_FAILED");
+    }
+
+    if (attempt < REMOTE_MEDIA_RETRY_DELAYS.length) {
+      await wait(REMOTE_MEDIA_RETRY_DELAYS[attempt]);
+    }
+  }
+
+  throw lastError || new Error("REMOTE_MEDIA_FETCH_FAILED");
+}
+
 export function isStoredMediaReference(src: string | null | undefined): src is string {
   return Boolean(
     src && (parseLocalMediaRef(src) || parseRemoteMediaReference(src)),
@@ -237,7 +281,7 @@ async function uploadRemoteMediaFile(file: File) {
     return null;
   }
 
-  const response = await fetch(SHARED_CONTENT_MEDIA_ENDPOINT, {
+  const response = await fetchRemoteMediaWithRetry(SHARED_CONTENT_MEDIA_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": file.type || "application/octet-stream",
@@ -257,7 +301,9 @@ async function uploadRemoteMediaFile(file: File) {
   }
 
   if (!response.ok) {
-    throw new Error("REMOTE_MEDIA_UPLOAD_FAILED");
+    throw new Error(
+      `REMOTE_MEDIA_UPLOAD_FAILED:${response.status}:${await readErrorResponse(response)}`,
+    );
   }
 
   const payload = (await response.json()) as {
@@ -292,7 +338,7 @@ async function uploadRemoteMediaFileInChunks(file: File) {
       mimeType,
     );
     const chunkBase64 = await blobToBase64(chunkBlob);
-    const response = await fetch(SHARED_CONTENT_MEDIA_ENDPOINT, {
+    const response = await fetchRemoteMediaWithRetry(SHARED_CONTENT_MEDIA_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -319,11 +365,13 @@ async function uploadRemoteMediaFileInChunks(file: File) {
     }
 
     if (!response.ok) {
-      throw new Error("REMOTE_MEDIA_CHUNK_UPLOAD_FAILED");
+      throw new Error(
+        `REMOTE_MEDIA_CHUNK_UPLOAD_FAILED:${response.status}:${await readErrorResponse(response)}`,
+      );
     }
   }
 
-  const completeResponse = await fetch(SHARED_CONTENT_MEDIA_ENDPOINT, {
+  const completeResponse = await fetchRemoteMediaWithRetry(SHARED_CONTENT_MEDIA_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -348,7 +396,9 @@ async function uploadRemoteMediaFileInChunks(file: File) {
   }
 
   if (!completeResponse.ok) {
-    throw new Error("REMOTE_MEDIA_COMPLETE_FAILED");
+    throw new Error(
+      `REMOTE_MEDIA_COMPLETE_FAILED:${completeResponse.status}:${await readErrorResponse(completeResponse)}`,
+    );
   }
 
   const payload = (await completeResponse.json()) as {
