@@ -3,9 +3,9 @@ import {
   buildServiceHeaders,
   createMediaKey,
   emptyResponse,
+  getMediaStore,
   isAuthorized,
   jsonResponse,
-  mediaStore,
   methodNotAllowedResponse,
   unauthorizedResponse,
 } from "./_shared/portfolio-shared.mjs";
@@ -31,6 +31,7 @@ async function setMediaStoreWithRetry(key, blob, options, label) {
 
   for (let attempt = 0; attempt <= MEDIA_STORE_RETRY_DELAYS.length; attempt += 1) {
     try {
+      const mediaStore = getMediaStore();
       await mediaStore.set(key, blob, options);
       return;
     } catch (error) {
@@ -54,6 +55,7 @@ async function setMediaStoreWithRetry(key, blob, options, label) {
 export default async function handler(request) {
   try {
     if (request.method === "GET") {
+      const mediaStore = getMediaStore();
       const key = getRequestKey(request);
       if (!key) {
         return badRequestResponse("Missing media key.");
@@ -162,6 +164,7 @@ export default async function handler(request) {
         }
 
         if (body?.mode === "complete") {
+          const mediaStore = getMediaStore();
           const uploadId =
             typeof body.uploadId === "string" ? body.uploadId.trim() : "";
           const totalChunks = Number(body.totalChunks);
@@ -222,7 +225,7 @@ export default async function handler(request) {
 
           await Promise.allSettled(
             Array.from({ length: totalChunks }, (_, chunkIndex) =>
-              mediaStore.delete(getChunkKey(uploadId, chunkIndex)),
+              getMediaStore().delete(getChunkKey(uploadId, chunkIndex)),
             ),
           );
 
@@ -275,6 +278,7 @@ export default async function handler(request) {
         return unauthorizedResponse();
       }
 
+      const mediaStore = getMediaStore();
       const key = getRequestKey(request);
       if (!key) {
         return badRequestResponse("Missing media key.");

@@ -5,8 +5,13 @@ export const SHARED_CONTENT_SERVICE_HEADER_VALUE = "netlify";
 export const SHARED_CONTENT_PASSWORD_HEADER_NAME = "x-portfolio-admin-password";
 const DEFAULT_ADMIN_PASSWORD = "sml2846499028";
 
-export const contentStore = getStore("portfolio-shared-content");
-export const mediaStore = getStore("portfolio-shared-media");
+export function getContentStore() {
+  return getStore("portfolio-shared-content");
+}
+
+export function getMediaStore() {
+  return getStore("portfolio-shared-media");
+}
 
 function normalizeFileName(fileName) {
   return fileName

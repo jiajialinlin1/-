@@ -1,6 +1,6 @@
 import {
   badRequestResponse,
-  contentStore,
+  getContentStore,
   isAuthorized,
   jsonResponse,
   methodNotAllowedResponse,
@@ -10,6 +10,8 @@ import {
 const CONTENT_KEY = "site-content.json";
 
 export default async function handler(request) {
+  const contentStore = getContentStore();
+
   if (request.method === "GET") {
     const document = await contentStore.get(CONTENT_KEY, {
       type: "json",
