@@ -13,6 +13,7 @@ import {
 const DEFAULT_NETLIFY_API_URL = "https://api.netlify.com";
 const SIGNED_URL_ACCEPT_HEADER = "application/json;type=signed-url";
 const MEDIA_STORE_NAME = "site:portfolio-shared-media";
+const SIGNED_URL_BATCH_CONCURRENCY = 8;
 
 function getRequestKey(request) {
   return new URL(request.url).searchParams.get("key")?.trim() || "";
@@ -92,6 +93,28 @@ async function getMediaSignedUrl(key) {
   return payload.url;
 }
 
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.max(1, Math.min(concurrency, items.length)) },
+      () => worker(),
+    ),
+  );
+
+  return results;
+}
+
 async function setMediaStoreWithRetry(key, blob, options, label) {
   let lastError = null;
 
@@ -162,10 +185,6 @@ export default async function handler(request) {
     }
 
     if (request.method === "POST") {
-      if (!isAuthorized(request)) {
-        return unauthorizedResponse();
-      }
-
       const contentType = request.headers.get("content-type") || "";
       if (contentType.startsWith("application/json")) {
         let body;
@@ -173,6 +192,41 @@ export default async function handler(request) {
           body = await request.json();
         } catch {
           return badRequestResponse("Invalid JSON payload.");
+        }
+
+        if (body?.mode === "resolve-batch") {
+          const keys = Array.isArray(body.keys)
+            ? Array.from(
+                new Set(
+                  body.keys
+                    .filter(
+                      (key) => typeof key === "string" && key.trim(),
+                    )
+                    .map((key) => key.trim()),
+                ),
+              )
+            : [];
+
+          if (keys.length === 0) {
+            return badRequestResponse("Missing media keys.");
+          }
+
+          const items = await mapWithConcurrency(
+            keys,
+            SIGNED_URL_BATCH_CONCURRENCY,
+            async (key) => ({
+              key,
+              url: await getMediaSignedUrl(key),
+            }),
+          );
+
+          return jsonResponse({
+            items: items.filter((item) => typeof item.url === "string" && item.url),
+          });
+        }
+
+        if (!isAuthorized(request)) {
+          return unauthorizedResponse();
         }
 
         if (body?.mode === "chunk") {
@@ -306,6 +360,10 @@ export default async function handler(request) {
             mimeType,
           });
         }
+      }
+
+      if (!isAuthorized(request)) {
+        return unauthorizedResponse();
       }
 
       const fileNameHeader = request.headers.get("x-file-name");

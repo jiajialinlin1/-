@@ -14,6 +14,7 @@ const STORE_NAME = "media_assets";
 const MEDIA_REF_PREFIX = "idb:";
 const REMOTE_MEDIA_CHUNK_SIZE = 3 * 1024 * 1024;
 const REMOTE_MEDIA_RETRY_DELAYS = [250, 800, 1600];
+const REMOTE_MEDIA_RESOLVE_BATCH_LIMIT = 200;
 
 interface MediaRecord {
   id: string;
@@ -26,6 +27,7 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 const objectUrlCache = new Map<string, string>();
 const mimeTypeCache = new Map<string, string>();
 const pendingLoads = new Map<string, Promise<string | null>>();
+const remoteResolvedUrlCache = new Map<string, string>();
 
 function isBrowser() {
   return typeof window !== "undefined" && typeof indexedDB !== "undefined";
@@ -204,7 +206,7 @@ export function resolveStoredMediaSrc(src: string | null | undefined) {
 
   const remoteReference = parseRemoteMediaReference(src);
   if (remoteReference) {
-    return buildRemoteMediaUrl(remoteReference.key);
+    return remoteResolvedUrlCache.get(src) || buildRemoteMediaUrl(remoteReference.key);
   }
 
   const mediaId = parseLocalMediaRef(src);
@@ -236,9 +238,17 @@ export async function loadStoredMediaBlob(src: string | null | undefined) {
 
   const remoteReference = parseRemoteMediaReference(src);
   if (remoteReference) {
-    const response = await fetch(buildRemoteMediaUrl(remoteReference.key), {
+    const directUrl = remoteResolvedUrlCache.get(src);
+    let response = await fetch(directUrl || buildRemoteMediaUrl(remoteReference.key), {
       cache: "force-cache",
     });
+
+    if (!response.ok && directUrl) {
+      remoteResolvedUrlCache.delete(src);
+      response = await fetch(buildRemoteMediaUrl(remoteReference.key), {
+        cache: "force-cache",
+      });
+    }
 
     if (!response.ok) {
       return null;
@@ -429,6 +439,86 @@ export async function storeMediaFile(file: File) {
   return storeMediaBlob(file);
 }
 
+export async function resolveRemoteMediaPreviewUrls(
+  sources: Array<string | null | undefined>,
+) {
+  const remoteEntries = Array.from(
+    new Set(
+      sources
+        .filter((source): source is string => Boolean(source))
+        .map((source) => source.trim())
+        .filter((source) => Boolean(parseRemoteMediaReference(source))),
+    ),
+  );
+
+  if (remoteEntries.length === 0) {
+    return new Map<string, string>();
+  }
+
+  const keyToSources = new Map<string, string[]>();
+  const unresolvedKeys: string[] = [];
+
+  for (const source of remoteEntries) {
+    const remoteReference = parseRemoteMediaReference(source);
+    if (!remoteReference) continue;
+
+    const cachedUrl = remoteResolvedUrlCache.get(source);
+    if (cachedUrl) continue;
+
+    const currentSources = keyToSources.get(remoteReference.key) ?? [];
+    currentSources.push(source);
+    keyToSources.set(remoteReference.key, currentSources);
+  }
+
+  unresolvedKeys.push(...keyToSources.keys());
+  if (unresolvedKeys.length > 0) {
+    for (let index = 0; index < unresolvedKeys.length; index += REMOTE_MEDIA_RESOLVE_BATCH_LIMIT) {
+      const keys = unresolvedKeys.slice(index, index + REMOTE_MEDIA_RESOLVE_BATCH_LIMIT);
+      const response = await fetchRemoteMediaWithRetry(SHARED_CONTENT_MEDIA_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          keys,
+          mode: "resolve-batch",
+        }),
+      });
+
+      const hasServiceHeader = hasSharedContentServiceHeader(response.headers);
+      if (!hasServiceHeader || !response.ok) {
+        continue;
+      }
+
+      const payload = (await response.json()) as {
+        items?: Array<{ key?: string; url?: string }>;
+      };
+
+      for (const item of payload.items ?? []) {
+        if (
+          !item ||
+          typeof item.key !== "string" ||
+          !item.key.trim() ||
+          typeof item.url !== "string" ||
+          !item.url.trim()
+        ) {
+          continue;
+        }
+
+        for (const source of keyToSources.get(item.key) ?? []) {
+          remoteResolvedUrlCache.set(source, item.url.trim());
+        }
+      }
+    }
+  }
+
+  return new Map(
+    remoteEntries
+      .map((source) => [source, remoteResolvedUrlCache.get(source)] as const)
+      .filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
+}
+
 export async function migrateDataUrlToStoredMedia(src: string) {
   const blob = await dataUrlToBlob(src);
   return storeMediaBlob(blob);
@@ -449,6 +539,7 @@ export async function warmStoredMediaRefs(refs: string[]) {
 export async function deleteStoredMedia(src: string | null | undefined) {
   const remoteReference = src ? parseRemoteMediaReference(src) : null;
   if (remoteReference) {
+    remoteResolvedUrlCache.delete(src);
     const password = getImageSettingsAccessPassword();
     if (!password) return;
 

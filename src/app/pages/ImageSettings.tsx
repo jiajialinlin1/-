@@ -146,6 +146,7 @@ type PrototypePackageInputFile = File & {
 };
 
 const PROTOTYPE_UPLOAD_RETRY_DELAYS = [300, 900, 1800];
+const PROTOTYPE_UPLOAD_CONCURRENCY = 4;
 
 function normalizePrototypePath(path: string) {
   return path
@@ -194,21 +195,47 @@ async function uploadPrototypePackageFiles(
     mimeType?: string;
     path: string;
     src: string;
-  }> = [];
+  } | undefined> = new Array(files.length);
+  const uploadedSources: string[] = [];
+  let nextIndex = 0;
+  let uploadError: unknown = null;
 
-  for (const [index, { file, path }] of files.entries()) {
-    uploadedFiles.push({
-      path,
-      src: await storePrototypePackageFile(file),
-      mimeType: file.type || undefined,
-    });
+  async function worker() {
+    while (nextIndex < files.length && !uploadError) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const { file, path } = files[currentIndex];
 
-    if (index < files.length - 1) {
-      await wait(80);
+      try {
+        const src = await storePrototypePackageFile(file);
+        uploadedFiles[currentIndex] = {
+          path,
+          src,
+          mimeType: file.type || undefined,
+        };
+        uploadedSources.push(src);
+      } catch (error) {
+        uploadError = error;
+        return;
+      }
     }
   }
 
-  return uploadedFiles;
+  await Promise.all(
+    Array.from(
+      { length: Math.max(1, Math.min(PROTOTYPE_UPLOAD_CONCURRENCY, files.length)) },
+      () => worker(),
+    ),
+  );
+
+  if (uploadError) {
+    await deleteStoredMediaBatch(uploadedSources);
+    throw uploadError;
+  }
+
+  return uploadedFiles.filter(
+    (file): file is NonNullable<(typeof uploadedFiles)[number]> => Boolean(file),
+  );
 }
 
 function stripPrototypePackageRoot(

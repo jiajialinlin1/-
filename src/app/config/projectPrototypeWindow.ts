@@ -15,6 +15,7 @@ import {
   type ProjectItem,
 } from "./projectsSettings";
 import { loadPrototypePackageBundleFiles } from "./prototypePackageBundle";
+import { resolveRemoteMediaPreviewUrls } from "./mediaStorage";
 
 export type OpenProjectPrototypeResult =
   | "opened"
@@ -46,32 +47,48 @@ function renderPreviewWindowState(
 }
 
 async function createPreviewSessionFiles(project: ProjectItem) {
+  let files: PrototypePreviewSessionFile[] = [];
+
   if (project.prototypeBundle) {
     const bundledFiles = await loadPrototypePackageBundleFiles(
       project.prototypeBundle,
     );
 
     if (bundledFiles.length > 0) {
-      return bundledFiles;
+      files = bundledFiles;
     }
   }
 
-  if (hasProjectPrototypePackage(project)) {
-    return getProjectPrototypePackageFiles(project);
+  if (files.length === 0 && hasProjectPrototypePackage(project)) {
+    files = getProjectPrototypePackageFiles(project);
   }
 
-  if (!project.prototypeHtml) {
-    return [];
+  if (files.length === 0) {
+    if (!project.prototypeHtml) {
+      return [];
+    }
+
+    files = [
+      {
+        blobData: undefined,
+        path: getProjectPrototypeEntryPath(project) || "index.html",
+        src: project.prototypeHtml,
+        mimeType: "text/html",
+      } satisfies PrototypePreviewSessionFile,
+    ];
   }
 
-  return [
-    {
-      blobData: undefined,
-      path: getProjectPrototypeEntryPath(project) || "index.html",
-      src: project.prototypeHtml,
-      mimeType: "text/html",
-    } satisfies PrototypePreviewSessionFile,
-  ];
+  const resolvedUrlMap = await resolveRemoteMediaPreviewUrls(
+    files.map((file) => file.src),
+  );
+
+  return files.map((file) => ({
+    ...file,
+    src:
+      typeof file.src === "string"
+        ? resolvedUrlMap.get(file.src) || file.src
+        : file.src,
+  }));
 }
 
 function trackPreviewWindow(previewWindow: Window, sessionId: string) {
