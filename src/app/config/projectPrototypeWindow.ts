@@ -15,7 +15,6 @@ import {
   type ProjectItem,
 } from "./projectsSettings";
 import { loadPrototypePackageBundleFiles } from "./prototypePackageBundle";
-import { resolveRemoteMediaPreviewUrls } from "./mediaStorage";
 
 export type OpenProjectPrototypeResult =
   | "opened"
@@ -77,18 +76,7 @@ async function createPreviewSessionFiles(project: ProjectItem) {
       } satisfies PrototypePreviewSessionFile,
     ];
   }
-
-  const resolvedUrlMap = await resolveRemoteMediaPreviewUrls(
-    files.map((file) => file.src),
-  );
-
-  return files.map((file) => ({
-    ...file,
-    src:
-      typeof file.src === "string"
-        ? resolvedUrlMap.get(file.src) || file.src
-        : file.src,
-  }));
+  return files;
 }
 
 function trackPreviewWindow(previewWindow: Window, sessionId: string) {

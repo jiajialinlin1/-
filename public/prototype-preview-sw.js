@@ -264,6 +264,16 @@ function createNotFoundResponse() {
   });
 }
 
+function createErrorResponse(message) {
+  return new Response(message || "Prototype preview failed.", {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    },
+    status: 500,
+  });
+}
+
 self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
@@ -279,47 +289,53 @@ self.addEventListener("fetch", (event) => {
   if (!directPreviewContext && !referrerPreviewContext) return;
 
   event.respondWith((async () => {
-    const previewContext = directPreviewContext || referrerPreviewContext;
-    const session = await getPreviewSession(previewContext.sessionId);
+    try {
+      const previewContext = directPreviewContext || referrerPreviewContext;
+      const session = await getPreviewSession(previewContext.sessionId);
 
-    if (!session || session.expiresAt <= Date.now()) {
-      return createNotFoundResponse();
-    }
-
-    const requestPath = directPreviewContext
-      ? previewContext.packagePath
-      : normalizePath(requestUrl.pathname.replace(/^\/+/, ""));
-    const matchedSessionFile = resolveSessionFile(
-      session,
-      requestPath,
-      event.request.mode,
-    );
-
-    if (!matchedSessionFile) {
-      if (directPreviewContext) {
+      if (!session || session.expiresAt <= Date.now()) {
         return createNotFoundResponse();
       }
 
-      return fetch(event.request);
-    }
+      const requestPath = directPreviewContext
+        ? previewContext.packagePath
+        : normalizePath(requestUrl.pathname.replace(/^\/+/, ""));
+      const matchedSessionFile = resolveSessionFile(
+        session,
+        requestPath,
+        event.request.mode,
+      );
 
-    if (
-      !directPreviewContext &&
-      event.request.mode === "navigate"
-    ) {
-      return Response.redirect(
-        encodePreviewPath(
-          previewContext.sessionId,
-          matchedSessionFile.resolvedPath,
-        ),
-        302,
+      if (!matchedSessionFile) {
+        if (directPreviewContext) {
+          return createNotFoundResponse();
+        }
+
+        return fetch(event.request);
+      }
+
+      if (
+        !directPreviewContext &&
+        event.request.mode === "navigate"
+      ) {
+        return Response.redirect(
+          encodePreviewPath(
+            previewContext.sessionId,
+            matchedSessionFile.resolvedPath,
+          ),
+          302,
+        );
+      }
+
+      const response = await createFileResponse(
+        matchedSessionFile.file,
+        matchedSessionFile.resolvedPath,
+      );
+      return response || createNotFoundResponse();
+    } catch (error) {
+      return createErrorResponse(
+        error instanceof Error ? error.message : "Prototype preview failed.",
       );
     }
-
-    const response = await createFileResponse(
-      matchedSessionFile.file,
-      matchedSessionFile.resolvedPath,
-    );
-    return response || createNotFoundResponse();
   })());
 });

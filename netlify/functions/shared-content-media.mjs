@@ -10,11 +10,6 @@ import {
   unauthorizedResponse,
 } from "./_shared/portfolio-shared.mjs";
 
-const DEFAULT_NETLIFY_API_URL = "https://api.netlify.com";
-const SIGNED_URL_ACCEPT_HEADER = "application/json;type=signed-url";
-const MEDIA_STORE_NAME = "site:portfolio-shared-media";
-const SIGNED_URL_BATCH_CONCURRENCY = 8;
-
 function getRequestKey(request) {
   return new URL(request.url).searchParams.get("key")?.trim() || "";
 }
@@ -29,90 +24,6 @@ function wait(duration) {
   return new Promise((resolve) => {
     setTimeout(resolve, duration);
   });
-}
-
-function getBlobsEnvironmentContext() {
-  const encodedContext =
-    globalThis.netlifyBlobsContext || process.env.NETLIFY_BLOBS_CONTEXT;
-
-  if (typeof encodedContext !== "string" || !encodedContext.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(Buffer.from(encodedContext, "base64").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function getMediaSignedUrl(key) {
-  const context = getBlobsEnvironmentContext();
-  const apiUrl =
-    context?.apiURL ||
-    process.env.NETLIFY_BLOBS_API_URL ||
-    DEFAULT_NETLIFY_API_URL;
-  const siteId =
-    context?.siteID ||
-    process.env.SITE_ID ||
-    process.env.NETLIFY_SITE_ID ||
-    "";
-  const token = context?.token || process.env.NETLIFY_AUTH_TOKEN || "";
-
-  if (!siteId || !token) {
-    return null;
-  }
-
-  const signedUrlResponse = await fetch(
-    `${apiUrl}/api/v1/blobs/${encodeURIComponent(siteId)}/${MEDIA_STORE_NAME}/${key
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/")}`,
-    {
-      headers: {
-        Accept: SIGNED_URL_ACCEPT_HEADER,
-        Authorization: `Bearer ${token}`,
-      },
-      method: "GET",
-    },
-  );
-
-  if (!signedUrlResponse.ok) {
-    const errorText = await signedUrlResponse.text();
-    console.error(
-      `[shared-content-media] signed url request failed: key="${key}" status=${signedUrlResponse.status} body="${errorText}"`,
-    );
-    return null;
-  }
-
-  const payload = await signedUrlResponse.json();
-  if (!payload?.url || typeof payload.url !== "string") {
-    return null;
-  }
-
-  return payload.url;
-}
-
-async function mapWithConcurrency(items, concurrency, mapper) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < items.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
-    }
-  }
-
-  await Promise.all(
-    Array.from(
-      { length: Math.max(1, Math.min(concurrency, items.length)) },
-      () => worker(),
-    ),
-  );
-
-  return results;
 }
 
 async function setMediaStoreWithRetry(key, blob, options, label) {
@@ -146,11 +57,6 @@ export default async function handler(request) {
       const key = getRequestKey(request);
       if (!key) {
         return badRequestResponse("Missing media key.");
-      }
-
-      const signedUrl = await getMediaSignedUrl(key);
-      if (signedUrl) {
-        return Response.redirect(signedUrl, 307);
       }
 
       const result = await mediaStore.getWithMetadata(key, {
@@ -192,37 +98,6 @@ export default async function handler(request) {
           body = await request.json();
         } catch {
           return badRequestResponse("Invalid JSON payload.");
-        }
-
-        if (body?.mode === "resolve-batch") {
-          const keys = Array.isArray(body.keys)
-            ? Array.from(
-                new Set(
-                  body.keys
-                    .filter(
-                      (key) => typeof key === "string" && key.trim(),
-                    )
-                    .map((key) => key.trim()),
-                ),
-              )
-            : [];
-
-          if (keys.length === 0) {
-            return badRequestResponse("Missing media keys.");
-          }
-
-          const items = await mapWithConcurrency(
-            keys,
-            SIGNED_URL_BATCH_CONCURRENCY,
-            async (key) => ({
-              key,
-              url: await getMediaSignedUrl(key),
-            }),
-          );
-
-          return jsonResponse({
-            items: items.filter((item) => typeof item.url === "string" && item.url),
-          });
         }
 
         if (!isAuthorized(request)) {
