@@ -22,7 +22,7 @@ export function Hero() {
       >
         <h1 className="font-bold tracking-tight text-[#1d1d1f] leading-tight text-[64px]">
           <span className="block">你好，我是宋茂林</span>
-          <span className="block text-[#86868b]">UX交互设计师。</span>
+          <span className="block text-[#86868b]">产品经理。</span>
         </h1>
         <p className="text-lg md:text-xl text-[#86868b] max-w-lg leading-relaxed">
           我致力于打造极简、直观且像素级完美的数字体验，将形式与功能完美融合。
